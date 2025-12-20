@@ -1,0 +1,133 @@
+version: '3.8'
+
+services:
+  # Zookeeper - required for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - debezium-network
+
+  # Kafka Broker
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    networks:
+      - debezium-network
+
+  # Oracle Database Enterprise Edition
+  oracle:
+    image: container-registry.oracle.com/database/enterprise:19.19.0.0
+    hostname: oracle
+    container_name: oracle
+    ports:
+      - "1521:1521"
+      - "5500:5500"
+    environment:
+      ORACLE_SID: ORCLCDB
+      ORACLE_PDB: ORCLPDB1
+      ORACLE_PWD: OraclePassword123
+      ORACLE_CHARACTERSET: AL32UTF8
+      ORACLE_EDITION: enterprise
+    volumes:
+      - ./oracle-init:/opt/oracle/scripts/startup
+      - oracle-data:/opt/oracle/oradata
+    networks:
+      - debezium-network
+    healthcheck:
+      test: ["CMD", "sqlplus", "-L", "sys/OraclePassword123@//localhost:1521/ORCLCDB as sysdba", "@/opt/oracle/scripts/startup/healthcheck.sql"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+    shm_size: 2gb
+
+  # Debezium Connect
+  debezium:
+    image: quay.io/debezium/connect:3.4.0.Final
+    hostname: debezium
+    container_name: debezium
+    depends_on:
+      - kafka
+      - oracle
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: debezium_connect_configs
+      OFFSET_STORAGE_TOPIC: debezium_connect_offsets
+      STATUS_STORAGE_TOPIC: debezium_connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      KAFKA_HEAP_OPTS: "-Xms1G -Xmx2G"
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      ENABLE_DEBEZIUM_SCRIPTING: 'true'
+      LD_LIBRARY_PATH: /opt/oracle/instantclient
+      OCI_LIB_DIR: /opt/oracle/instantclient
+      OCI_INC_DIR: /opt/oracle/instantclient
+    networks:
+      - debezium-network
+    user: "0:0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+    # - ./drivers/ojdbc8.jar:/kafka/libs/ojdbc8.jar
+    # - ./drivers/xstreams.jar:/kafka/libs/xstreams.jar
+    - ./drivers/instantclient/instantclient_21_12:/opt/oracle/instantclient
+    - ./drivers/instantclient/instantclient_21_12/ojdbc11.jar:/kafka/libs/ojdbc11.jar
+    - ./drivers/instantclient/instantclient_21_12/xstreams.jar:/kafka/libs/xstreams.jar
+    mem_limit: 4g
+
+  # Kafka UI for monitoring
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    hostname: kafka-ui
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://debezium:8083
+    networks:
+      - debezium-network
+
+networks:
+  debezium-network:
+    driver: bridge
+
+volumes:
+  oracle-data:

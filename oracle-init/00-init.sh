@@ -1,0 +1,1 @@
+mkdir -p /opt/oracle/oradata/recovery_area
